@@ -8,8 +8,12 @@ version = "0.1.0"
 description = "RF mapping analysis models, detection, and raw-trial reconstruction"
 requires-python = ">=3.12"
 dependencies = [
+  "ipykernel>=7.4.0",
+  "matplotlib>=3.11.2",
   "numpy>=2,<3",
+  "pandas>=3.0.6",
   "scipy>=1.14,<2",
+  "scipy-stubs~=1.18.1",
   "tqdm>=4.66,<5",
 ]
 
