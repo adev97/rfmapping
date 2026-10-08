@@ -14,6 +14,17 @@ function RFmapping_core(params)
     validateattributes(sessionList, {'numeric'}, ...
         {'vector', 'integer', 'positive', 'finite'}, mfilename, 'params.sessionList');
     sessionList = sessionList(:).';
+    % Optional layout written by identify_and_separate_sessions.py.
+    % Callers without sessionDir retain the original recording layout.
+    useExportedSessionPaths = isfield(params, 'sessionDir') && ...
+        ~isempty(params.sessionDir);
+    if useExportedSessionPaths
+        assert(numel(sessionList) == 1, ...
+            'An explicit sessionDir requires one session per call.');
+        assert(isfield(params, 'trialsMatFilename') && ...
+            ~isempty(params.trialsMatFilename), ...
+            'Set trialsMatFilename to the trial log inside sessionDir/stimulus.');
+    end
     lum = params.lum;
 
     total_deg = params.total_deg;
@@ -77,15 +88,30 @@ function RFmapping_core(params)
         fprintf('===========================\n');
         fprintf('Working on session: %s\n', sessionID);
 
-        base_dir = [params.base_dir, date, '/', sessionID, '/'];
-        
-        
-        trials_data_mat = [base_dir, date, '.mat'];
-        trials_mat_adc = [base_dir, 'data/on_list_times.npy'];
+        if useExportedSessionPaths
+            base_dir = [char(params.sessionDir), filesep];
+            trials_data_mat = fullfile(base_dir, 'stimulus', params.trialsMatFilename);
+            trials_mat_adc = fullfile(base_dir, 'stimulus', 'on_list_times.npy');
+        else
+            base_dir = [params.base_dir, date, '/', sessionID, '/'];
+            trials_data_mat = [base_dir, date, '.mat'];
+            trials_mat_adc = [base_dir, 'data/on_list_times.npy'];
+        end
 
         % load([fbasename '_Trials.mat']);
         trials = load(trials_data_mat).trials;
         trials_time = readNPY(trials_mat_adc);
+        if useExportedSessionPaths
+            validateattributes(trials_time, {'numeric'}, ...
+                {'vector', 'real', 'finite', 'nonnegative'});
+            trials_time = double(trials_time(:));
+            assert(numel(trials_time) == numel(trials) + 1, ...
+                'Expected one boundary per trial plus the final closing boundary.');
+            assert(all(diff(trials_time) > 0), ...
+                'Trial boundaries must be strictly increasing.');
+            fprintf('Loaded %d trials and %d session-local ADC boundaries.\n', ...
+                numel(trials), numel(trials_time));
+        end
         barCoverage = [];
         if isVerticalBar
             barCoverage = RFmapping_vertical_bar_coverage(trials, trials_time, ...
@@ -105,18 +131,33 @@ function RFmapping_core(params)
             fprintf('===========================\n')
             fprintf('Probe%s\n', probe);
 
-            kilosort_folder = [base_dir, 'kilosort/Probe', probe, '/kilosort', session, '/'];
-            % kilosort_folder = [base_dir, 'pipeline/260701/Probe', probe, '/kilosort'];
-            clusterKSLabelFile = [kilosort_folder, 'cluster_KSLabel.tsv'];
-            clusterGroupFile = [kilosort_folder, 'cluster_group.tsv'];
-            spikeClustersFile = [kilosort_folder, 'spike_clusters.npy'];
-            spikeTimesFile = [base_dir, 'data/probe', probe, '/adc_spike_time.npy'];
+            if useExportedSessionPaths
+                kilosort_folder = fullfile(base_dir, 'neural', ['Probe', probe]);
+                clusterKSLabelFile = fullfile(kilosort_folder, 'cluster_KSLabel.tsv');
+                spikeClustersFile = fullfile(kilosort_folder, 'spike_clusters.npy');
+                spikeTimesFile = fullfile(kilosort_folder, 'adc_spike_times.npy');
+            else
+                kilosort_folder = [base_dir, 'kilosort/Probe', probe, '/kilosort', session, '/'];
+                clusterKSLabelFile = [kilosort_folder, 'cluster_KSLabel.tsv'];
+                spikeClustersFile = [kilosort_folder, 'spike_clusters.npy'];
+                spikeTimesFile = [base_dir, 'data/probe', probe, '/adc_spike_time.npy'];
+            end
 
             %%%%%% CHANGE %%%%%%%
             save_dir = [base_dir, 'data/rfmapping', lumSuffix, '/', unitSelectionFolder, '/', timeFolder, '/Probe', probe, '/'];
         
             [spikeTimes, spikeClusters, clusterIds, clusterKSLabels] = ReadSpikeData( ...
                 spikeTimesFile, spikeClustersFile, clusterKSLabelFile);
+            if useExportedSessionPaths
+                validateattributes(spikeTimes, {'numeric'}, ...
+                    {'vector', 'real', 'finite', 'nonnegative'});
+                validateattributes(spikeClusters, {'numeric'}, ...
+                    {'vector', 'real', 'finite', 'integer', 'nonnegative'});
+                spikeTimes = double(spikeTimes(:));
+                spikeClusters = spikeClusters(:);
+                assert(numel(spikeTimes) == numel(spikeClusters), ...
+                    'Spike times and cluster IDs must have matching rows.');
+            end
             
             goodUnits = clusterIds(strcmp(clusterKSLabels, 'good'));
         
@@ -170,6 +211,12 @@ function RFmapping_core(params)
             unitPool = unique(spikeClusters);
             if onlyReadGoodUnits
                 unitPool = intersect(unitPool, goodUnits);
+            end
+            if useExportedSessionPaths
+                assert(~isempty(unitPool), ...
+                    'No selected units. Check cluster_KSLabel.tsv and onlyReadGoodUnits.');
+                fprintf('Loaded %d spikes; selected %d units.\n', ...
+                    numel(spikeTimes), numel(unitPool));
             end
         
             unitNum = size(unitPool, 1);
@@ -289,6 +336,14 @@ function RFmapping_core(params)
             rfmapMetadata.lum = lum;
             rfmapMetadata.responseUnits = 'spike_count';
             rfmapMetadata.responseNormalization = 'none';
+            if useExportedSessionPaths
+                rfmapMetadata.inputLayout = 'exported_session';
+                rfmapMetadata.timeReference = 'session_local_adc_seconds';
+                rfmapMetadata.inputFiles = struct( ...
+                    'trials', trials_data_mat, 'trialBoundaries', trials_mat_adc, ...
+                    'spikeTimes', spikeTimesFile, 'spikeClusters', spikeClustersFile, ...
+                    'clusterLabels', clusterKSLabelFile);
+            end
             if isVerticalBar
                 rfmapMetadata.stimulusGeometry = 'vertical_bar_full_height';
                 rfmapMetadata.eventDefinition = ...

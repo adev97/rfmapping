@@ -1,0 +1,114 @@
+SESSION 4 RF MAPPING SETUP
+==========================
+
+These files are based on adev97/rfmapping, pas-pipeline-edits,
+commit 2ca584c714395c98165c600d392cdbc06629e440.
+
+INSTALL
+-------
+Extract this archive into the rfmapping repository root:
+R:\Basic_Sciences\Phys\SenzaiLab\Aparna\Projects\PaS-360-RF-mapping\rfmapping
+
+It adds:
+    matlab\AD_RFmapping.m
+
+It replaces:
+    matlab\Utils\RFmapping_core.m
+
+RFmapping.m stays as it is. The core update adds an optional exported-session
+input layout. Calls without params.sessionDir keep the original input layout.
+The spike counting, spatial aggregation, output format, and CSV/PDF calculations
+are preserved.
+
+MATLAB
+------
+Open matlab\AD_RFmapping.m and run it, or use the MATLAB Command Window:
+
+    addpath('R:\Basic_Sciences\Phys\SenzaiLab\Aparna\Projects\PaS-360-RF-mapping\rfmapping\matlab')
+    AD_RFmapping
+
+The entrypoint adds the specific MATLAB helper directories itself.
+If MATLAB reports that a C compiler is missing, run:
+
+    mex -setup C
+
+Select a supported installed C compiler. If none is available, install a compiler
+supported by your MATLAB version, then run mex -setup C again. The entrypoint
+builds the supplied FindInInterval.c only when its platform MEX binary is missing
+and a C compiler is selected.
+
+The configured inputs are:
+    sessions\session_04\stimulus\on_list_times.npy
+    sessions\session_04\stimulus\AD_headfixed_rfmapping_stationary_2026-9-25_RF_Mapping_Trials.mat
+    sessions\session_04\neural\ProbeA\adc_spike_times.npy
+    sessions\session_04\neural\ProbeA\spike_clusters.npy
+    sessions\session_04\neural\ProbeA\cluster_KSLabel.tsv
+
+The exported spike times and photodiode boundaries already use session-local ADC
+seconds. The core reads them directly. It does not subtract another origin or
+convert the original probe sample indices.
+
+The complete 21,000-trial sequence and 21,001 boundaries are supplied to each map.
+ON/OFF selection uses Square_Luminance in the trial log. It does not select
+photodiode edges by rising/falling direction.
+
+DEFAULTS
+--------
+Session folder number: 4 (zero-based metadata ID: 3)
+Probe: A
+Good units only: true
+ON map: true
+OFF map: true
+Regular square coordinates from the trial log
+Response window: -100 to 400 ms, 1 ms bins (500 bins)
+Python RF detection within MATLAB: false for native Windows
+
+The response window extends across neighboring stimuli, which are approximately
+100 ms apart. These are the existing mapper's response-window defaults.
+The outputs contain pooled spike counts, with presentation counts and occupancy.
+The original final-boundary assumption of an additional 100 ms remains in the
+saved timing inputs; this setup does not change those boundaries.
+
+EXPECTED RESULTS
+----------------
+Under:
+R:\Basic_Sciences\Phys\SenzaiLab\Aparna\Data_by_mouse\m002\small-spread-neuropixel-config\2026-09-25\ad_session_2026_09_25\sessions\session_04
+
+ON:
+    data\rfmapping\good\-100_400_1ms\ProbeA\
+    regular_unitsSpikeCounts_260925_4.rfmap
+
+OFF:
+    data\rfmapping_off\good\-100_400_1ms\ProbeA\
+    regular_unitsSpikeCounts_260925_4_off.rfmap
+
+Each folder also receives the existing mapper's CSV/PDF exports.
+Wait for "Session 4 RF generation complete." The .rfmap files are written before
+the CSV/PDF export stage, so an export error can leave a source file already saved.
+An identical rerun writes the same output paths.
+
+PYTHON RF DETECTION AFTER MATLAB
+------------------------------
+In PowerShell, from the rfmapping repository root:
+
+    uv sync --extra analysis --link-mode copy
+
+    $sessionDir = 'R:\Basic_Sciences\Phys\SenzaiLab\Aparna\Data_by_mouse\m002\small-spread-neuropixel-config\2026-09-25\ad_session_2026_09_25\sessions\session_04'
+    $onMap = Join-Path $sessionDir 'data\rfmapping\good\-100_400_1ms\ProbeA\regular_unitsSpikeCounts_260925_4.rfmap'
+    $offMap = Join-Path $sessionDir 'data\rfmapping_off\good\-100_400_1ms\ProbeA\regular_unitsSpikeCounts_260925_4_off.rfmap'
+    $comparisonDir = Join-Path $sessionDir 'data\tc_comparison'
+
+    & .\.venv\Scripts\python.exe .\locate_rf.py $onMap --probe A --unit-prefix 'm002:260925:A' --comparison-output-dir $comparisonDir
+    & .\.venv\Scripts\python.exe .\locate_rf.py $offMap --probe A
+
+This uses the existing detector's 0-200 ms analysis window and default QC/settings.
+The ON command also requests the upstream comparison CSV exports with explicit
+m002:260925:A unit identity. OFF results remain separate.
+Inspect unit responses and the saved detector QC along with RF masks/centers.
+
+VALIDATION
+----------
+The package was checked against the current shared core source. The legacy input
+paths and the RF calculation/export routines were preserved. No MATLAB run or
+recording-dependent numerical check was possible here: MATLAB is unavailable,
+and the repository's designated validation host hhw9l84 could not be resolved.
