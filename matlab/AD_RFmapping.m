@@ -1,6 +1,12 @@
-function AD_RFmapping
+function AD_RFmapping(mode)
 % Generate regular ON and OFF RF maps from the exported session 4 inputs.
 % Run AD_RFmapping from MATLAB after installing the matching core update.
+% Use AD_RFmapping('detect') to run Python on already saved RF maps.
+
+    if nargin == 0
+        mode = 'all';
+    end
+    mode = validatestring(mode, {'all', 'detect'});
 
     matlabDir = fileparts(mfilename('fullpath'));
     codeDir = fileparts(matlabDir);
@@ -56,8 +62,8 @@ function AD_RFmapping
         'The response window must contain an integer number of time bins.');
     params.nbins = round(nbinsExact);
 
-    % Native Windows: run locate_rf.py separately after MATLAB finishes.
-    params.runRfDetection = false;
+    % Run Python automatically using this project's environment.
+    params.runRfDetection = true;
     if ispc
         params.rfPythonExecutable = fullfile(codeDir, '.venv', 'Scripts', 'python.exe');
     else
@@ -71,6 +77,20 @@ function AD_RFmapping
     params.dropBins = 2;
     params.rfWrapX = true;
     params.rfCollapseFrom2d = false;
+
+    if params.runRfDetection || strcmp(mode, 'detect')
+        assert(isfile(params.rfPythonExecutable), ...
+            'Missing Python executable: %s. Run uv sync --extra analysis in the repository.', ...
+            params.rfPythonExecutable);
+        assert(isfile(params.rfPythonScript), ...
+            'Missing RF detection script: %s', params.rfPythonScript);
+        fprintf('Python executable:\n%s\n', params.rfPythonExecutable);
+    end
+    if strcmp(mode, 'detect')
+        runSavedRfDetection(params, is_on, is_off);
+        fprintf('Session 4 Python RF detection complete.\n');
+        return;
+    end
 
     % Check the intended inputs before starting the analysis.
     requiredFiles = { ...
@@ -89,18 +109,40 @@ function AD_RFmapping
     end
 
     % FindInInterval.m documents the helper; Sync requires its MEX binary.
-    % Build the supplied C source once if MATLAB has a selected C compiler.
-    if exist('FindInInterval', 'file') ~= 3
+    % Build locally, then copy the MEX binary into this project. Keeping the
+    % compiler/linker files local avoids build-file access failures on R:.
+    intervalDir = fullfile(fmatDir, 'General');
+    intervalMex = fullfile(intervalDir, ['FindInInterval.', mexext]);
+    if ~isfile(intervalMex)
         assert(~isempty(mex.getCompilerConfigurations('C', 'Selected')), ...
             ['FindInInterval needs a MEX binary. Run mex -setup C in MATLAB ' ...
              'to select a supported compiler, then rerun AD_RFmapping.']);
-        intervalDir = fullfile(fmatDir, 'General');
-        fprintf('Building FindInInterval for this MATLAB installation...\n');
-        mex('-outdir', intervalDir, fullfile(intervalDir, 'FindInInterval.c'));
-        rehash;
-        assert(exist('FindInInterval', 'file') == 3, ...
-            'The compiled FindInInterval MEX binary is not on the MATLAB path.');
+        previousDir = pwd;
+        buildDir = tempname;
+        mkdir(buildDir);
+        buildCleanup = onCleanup(@() cleanupMexBuild(previousDir, buildDir));
+        copyfile(fullfile(intervalDir, 'FindInInterval.c'), ...
+            fullfile(buildDir, 'FindInInterval.c'));
+        cd(buildDir);
+        fprintf('Building FindInInterval locally:\n%s\n', buildDir);
+        mex('-outdir', buildDir, 'FindInInterval.c');
+        copyfile(fullfile(buildDir, ['FindInInterval.', mexext]), ...
+            intervalMex, 'f');
+        clear buildCleanup;  % Restore the working folder and remove build files.
     end
+    assert(isfile(intervalMex), 'Missing compiled MEX file: %s', intervalMex);
+    addpath(intervalDir, '-begin');
+    clear FindInInterval;
+    rehash path;
+    resolvedHelper = which('FindInInterval');
+    assert(exist('FindInInterval', 'file') == 3, ...
+        ['FindInInterval MEX is at:\n%s\nMATLAB resolves the name to:\n%s\n' ...
+         'Run which FindInInterval -all to check for another copy.'], ...
+        intervalMex, resolvedHelper);
+    helperIndices = feval('FindInInterval', [0; 1; 2], [0.5 1.5]);
+    assert(isequal(helperIndices, [2; 2]), ...
+        'FindInInterval did not return the expected indices in its startup check.');
+    fprintf('Using FindInInterval MEX:\n%s\n', resolvedHelper);
 
     fprintf('Session 4 input directory:\n%s\n', params.sessionDir);
     fprintf('Response window: %g to %g ms; %g ms/bin; %d bins.\n', ...
@@ -117,4 +159,52 @@ function AD_RFmapping
         RFmapping_core(params);
     end
     fprintf('Session 4 RF generation complete.\n');
+end
+
+function runSavedRfDetection(params, is_on, is_off)
+    % These filenames match the core's regular exported-session output layout.
+    assert(isscalar(params.sessionList) && ...
+        ~any([params.isVerticalBar, params.isBackgroundMoving, ...
+              params.isRotation, params.isAllocentricPixelBins]), ...
+        'Detection-only mode requires one regular square-mapping session.');
+    timeBinWidthMs = diff(params.VSTimeWindow) * 1000 / params.nbins;
+    timeFolder = sprintf('%g_%g_%gms', params.VSTimeWindow(1) * 1000, ...
+        params.VSTimeWindow(2) * 1000, timeBinWidthMs);
+    if params.onlyReadGoodUnits
+        unitSelectionFolder = 'good';
+    else
+        unitSelectionFolder = 'all';
+    end
+    suffixes = {};
+    if is_on
+        suffixes{end + 1} = '';
+    end
+    if is_off
+        suffixes{end + 1} = '_off';
+    end
+    jobs = cell(0, 2);
+    for index = 1:numel(suffixes)
+        suffix = suffixes{index};
+        for probe = params.probelist
+            rfmapPath = fullfile(params.sessionDir, 'data', ...
+                ['rfmapping', suffix], unitSelectionFolder, timeFolder, ...
+                ['Probe', probe], sprintf('regular_unitsSpikeCounts_%s_%d%s.rfmap', ...
+                params.date, params.sessionList, suffix));
+            assert(isfile(rfmapPath), ...
+                'Missing saved RF map: %s. Generate the maps with AD_RFmapping first.', ...
+                rfmapPath);
+            jobs(end + 1, :) = {rfmapPath, probe}; %#ok<AGROW>
+        end
+    end
+    for index = 1:size(jobs, 1)
+        RFmapping_run_python(jobs{index, 1}, jobs{index, 2}, params);
+    end
+end
+
+function cleanupMexBuild(previousDir, buildDir)
+    % Restore the working folder on success or error before deleting the build.
+    cd(previousDir);
+    if isfolder(buildDir)
+        rmdir(buildDir, 's');
+    end
 end
