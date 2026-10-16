@@ -1,0 +1,99 @@
+--- a/Utils/si_utils.py
++++ b/Utils/si_utils.py
+@@ -804,6 +804,10 @@
+     *,
+     session_dir: Path | None = None,
+     output_dir: Path | None = None,
++    kilosort_dir: str | Path | None = None,
++    recording: si.BaseRecording | None = None,
++    source_raw_file: str | Path | None = None,
++    analyzer_dir: str | Path | None = None,
+     only_good_units: bool = True,
+     remove_empty_units: bool = True,
+     load_sync_timestamps: bool = True,
+@@ -819,7 +823,15 @@
+     unit_location_radius_um: float = 75.0,
+     n_jobs: int = 32,
+ ) -> UnitArtifactPaths:
+-    """Compute templates and export the requested waveform/position artifacts."""
++    """Compute templates and export the requested waveform/position artifacts.
++
++    By default, read the original per-session Open Ephys/Kilosort layout.
++    Supply recording, source_raw_file, and kilosort_dir together to analyze an
++    existing recording, including a pipeline's saved concatenated recording.
++    Its raw channel order must match the binary used for Kilosort. Recorded
++    gains/offsets are required; channel IDs are normalized to raw column indices.
++    analyzer_dir optionally places the reusable cache alongside these exports.
++    """
+ 
+     if not unit_waveform and not unit_position:
+         return UnitArtifactPaths()
+@@ -830,19 +842,41 @@
+     session_dir = Path(session_dir) if session_dir is not None else base_dir / date / f'{date}_{session_id}'
+     output_dir = Path(output_dir) if output_dir is not None else session_dir / 'data'
+ 
++    supplied_recording = recording is not None
++    if supplied_recording and (kilosort_dir is None or source_raw_file is None):
++        raise ValueError('A supplied recording requires kilosort_dir and source_raw_file.')
++    if not supplied_recording and source_raw_file is not None:
++        raise ValueError('source_raw_file is only used together with a supplied recording.')
++
+     kilosort_run: str = f'kilosort_{session_id}'
+-    kilosort_dir: Path = session_dir / 'kilosort' / f'Probe{probe_name}' / kilosort_run
+-    session_info = read_formatted_json(session_dir / 'data' / 'session_info.json')['session_info']
+-    recording = read_open_ephys_probe(
+-        session_info, probe_name, load_sync_timestamps=load_sync_timestamps,
+-    )
+-    raw_file = Path(recording.get_annotation('open_ephys_raw_file'))
++    kilosort_dir = (
++        Path(kilosort_dir) if kilosort_dir is not None
++        else session_dir / 'kilosort' / f'Probe{probe_name}' / kilosort_run
++    )
++    if not supplied_recording:
++        session_info = read_formatted_json(session_dir / 'data' / 'session_info.json')['session_info']
++        recording = read_open_ephys_probe(
++            session_info, probe_name, load_sync_timestamps=load_sync_timestamps,
++        )
++        raw_file = Path(recording.get_annotation('open_ephys_raw_file'))
++    else:
++        if recording.get_num_segments() != 1:
++            raise ValueError('The supplied recording must have one segment.')
++        raw_file = Path(source_raw_file)
++        recording = recording.rename_channels(np.arange(recording.get_num_channels()))
++        if recording.get_channel_gains() is None or recording.get_channel_offsets() is None:
++            raise ValueError(
++                'The supplied recording must retain its recorded gains and offsets. '
++                'Load the complete saved concat folder rather than an uncalibrated binary.'
++            )
++
+     raw_num_channels = recording.get_num_channels()
+     raw_dtype = str(recording.get_dtype())
+     raw_sampling_frequency = recording.get_sampling_frequency()
+ 
+     waveform_analyzer_folder: Path = (
+-            session_dir / 'data' / 'spikeinterface_analyzer' / f'Probe{probe_name}'
++        Path(analyzer_dir) if analyzer_dir is not None
++        else session_dir / 'data' / 'spikeinterface_analyzer' / f'Probe{probe_name}'
+     )
+ 
+     validated_data = validate_data(
+@@ -944,10 +978,15 @@
+         'raw_num_channels': raw_num_channels,
+         'gain_to_uv': float(gains[0]) if np.all(gains == gains[0]) else gains.tolist(),
+         'offset_to_uv': float(offsets[0]) if np.all(offsets == offsets[0]) else offsets.tolist(),
+-        'open_ephys_stream_id': recording.get_annotation('open_ephys_stream_id'),
+-        'open_ephys_stream_name': recording.get_annotation('open_ephys_stream_name'),
+-        'load_sync_timestamps': load_sync_timestamps,
+-        'timestamp_reference': 'Open Ephys synchronized seconds' if load_sync_timestamps else 'Open Ephys start plus sample index / sampling frequency',
++        'recording_source': 'supplied_recording' if supplied_recording else 'open_ephys',
++        'open_ephys_stream_id': None if supplied_recording else recording.get_annotation('open_ephys_stream_id'),
++        'open_ephys_stream_name': None if supplied_recording else recording.get_annotation('open_ephys_stream_name'),
++        'load_sync_timestamps': None if supplied_recording else load_sync_timestamps,
++        'timestamp_reference': (
++            'Supplied recording native sample grid' if supplied_recording
++            else 'Open Ephys synchronized seconds' if load_sync_timestamps
++            else 'Open Ephys start plus sample index / sampling frequency'
++        ),
+         'keep_good_only': only_good_units,
+         'remove_empty_units': remove_empty_units,
+         'probe_contact_radius_um': probe_contact_radius_um,

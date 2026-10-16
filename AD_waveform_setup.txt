@@ -1,0 +1,111 @@
+AD m002 SESSION-4 WAVEFORM / UNIT POSITION SETUP
+===============================================
+
+Source: adev97/rfmapping, pas-pipeline-edits
+Reviewed commit: b959b98c1bef0af4af250508c1d1ac2ec902d2c5
+
+This package supersedes the earlier joint-recording waveform setup.
+It preserves Kai's original per-session analysis and plotting method.
+
+FILES
+-----
+AD_spikeinterface_waveform_unit_position.ipynb
+Utils/si_utils.py                       Original, byte-for-byte restoration.
+Utils/ad_prepare_waveform_session.py    Input preparation only.
+AD_waveform_setup.txt                   These instructions.
+
+No shared waveform/localization algorithms were changed. The former optional
+joint-input helper arguments and AD_waveform_joint_inputs.patch are not used.
+
+INSTALL
+-------
+Copy the notebook and both Utils files into this repository, preserving the
+Utils subdirectory. Keep any unrelated local edits in Git before replacement.
+
+R:\Basic_Sciences\Phys\SenzaiLab\Aparna\Projects\PaS-360-RF-mapping\rfmapping
+
+In a PowerShell terminal in that repository:
+    uv sync --extra analysis --extra waveform --link-mode copy
+
+Choose this project's .venv\Scripts\python.exe as the PyCharm notebook kernel.
+Restart the kernel after replacing the helper. Leave Kai's original notebook
+available; run AD_spikeinterface_waveform_unit_position.ipynb for these paths.
+
+INPUT PREPARATION
+-----------------
+Source sorting: ...\ad_session_2026_09_25\ProbeA\kilosort\
+Saved concat:   ...\ad_session_2026_09_25\ProbeA\concat\
+Selected raw:   session 4's OneBox-104.ProbeA\continuous.dat.
+
+The saved concat folder, including provenance.json, metadata, and the cached raw
+file, must remain available. Its provenance supplies the original recording
+order. If old paths cannot be resolved on Windows, supply raw_probe_files as the
+five original ProbeA continuous.dat paths in exactly that order.
+
+The inspection cell reads the five raw probe recordings' native frame counts,
+checks them against the concat, and verifies that the fourth is the RF recording
+you supplied. It computes session-4 boundaries in PROBE sample coordinates.
+
+Preparation selects those joint spikes, subtracts the native probe sample start,
+and writes:
+    sessions\session_04\kilosort\ProbeA\kilosort_4\
+    sessions\session_04\data\session_info.json
+
+Cluster IDs/labels and Kilosort geometry are retained. The derived sorting has
+the files needed by Kai's SpikeInterface helper; it is not a complete Phy export.
+Raw data and joint sorting files are read as sources. Existing incompatible
+session inputs/metadata raise errors rather than being replaced automatically.
+
+Do not use adc_spike_times.npy or ADC sample offsets for waveform extraction.
+ADC timestamps and probe sample indices describe different coordinates.
+
+KAI'S METHOD
+------------
+Generation calls the original generate_unit_artifacts with session_dir pointing
+to session_04, and output_dir to session_04/data. Its original defaults remain:
+good nonempty units; up to 2,000 uniformly sampled spikes/unit; seed 0; snippets
+from -0.5 to +1.5 ms; average templates; PTP center-of-mass position within 75 um
+of the strongest contact; synchronized Open Ephys timestamps; 32 workers.
+
+Only session-4 spikes and session-4 raw ProbeA data contribute to these estimates.
+The original five plot calls are retained, including same_x_column heatmaps and
+show_other_units=False. The first existing cluster ID replaces the original
+example ID 280 so an absent example ID does not prevent browsing.
+
+OUTPUTS AND SAVING
+------------------
+Under sessions\session_04\data\:
+    spikeinterface_analyzer\ProbeA\
+    waveform\config.json and run.log
+    waveform\ProbeA\manifest.json
+    waveform\ProbeA\channels.csv
+    waveform\ProbeA\waveform_time.csv
+    waveform\ProbeA\units.csv
+    waveform\ProbeA\Unit<ID>\template_uv.csv.gz
+    waveform\ProbeA\Unit<ID>\ptp_uv.csv.gz
+    waveform\ProbeA\Unit<ID>\spike_samples_all.csv.gz
+    waveform\ProbeA\Unit<ID>\spike_samples_selected.csv.gz
+    spike_position\config.json and run.log
+    spike_position\ProbeA\manifest.json
+    spike_position\ProbeA\positions.csv
+
+Generation saves these data automatically. The spike sample tables are
+session-local PROBE indices. The position CSV contains one estimate per unit.
+
+save_figures=False displays plots. Set it to True and rerun the plot setup and
+plot cells to save the usual five PNGs (200 dpi) in:
+    waveform\ProbeA\figures\
+The same filenames are overwritten when saved again. To browse other units,
+change plot_unit_ids and rerun only the plot setup and plot cells. For a later
+notebook session, run imports/configuration before those cells.
+
+Join RF results to positions by unit_id (the original cluster ID), not unit_index
+or CSV row number. Probe coordinates are not histological region assignments.
+
+VALIDATION
+----------
+The restored helper was checked byte-for-byte against the pinned source;
+notebook cells and the preparation module were checked structurally. No real
+recording or Windows runtime is accessible here. The repository's designated
+execution host hhw9l84 could not be resolved, so no project execution or
+recording-dependent numerical validation was performed.
