@@ -1,12 +1,15 @@
 """Extract session-specific spikes from an ADC-synchronized joint Kilosort sort.
 
-Run this script as before; edit the path variables and SESSION_NAMES below.
-ROOT points directly to OneBox-ADC; its parent contains the probe folders.
+Edit USER SETTINGS below and run this file directly with no arguments.
+Alternatively, run with --adc-dir pointing directly to OneBox-ADC. Its parent contains the
+probe folders by default; --pipeline-dir can select their location explicitly.
+Use --session-names for labels in concatenation order, or omit for generic names.
+Use --dry-run to validate inputs without creating or replacing any exports.
 Requires adc_spike_times*.npy from the EXACT Kilosort/Phy arrays being read,
 with identical spike-row order. Equal array lengths alone cannot prove this.
 
 Outputs, for each probe (and shank, if sorted separately):
-    ROOT.parent/sessions/session_04/neural/<probe>/[shank_N]/
+    <pipeline-dir>/sessions/session_04/neural/<probe>/[shank_N]/
         adc_spike_times.npy         session-local ADC seconds
         spike_clusters.npy         unchanged joint-sort cluster IDs
         spike_times_global.npy     original concatenated PROBE sample indices
@@ -30,31 +33,26 @@ The previous assignment NPZ is retained, including all unassigned spike rows.
 Reruns replace generated files. Dependencies: numpy and the standard library.
 """
 
+import argparse
 from pathlib import Path
 import re
 import shutil
+import sys
 
 import numpy as np
 
-# Build the path directly to the folder containing periods_*.npy.
-data_PATH = r"R:\Basic_Sciences\Phys\SenzaiLab\Aparna\Data_by_mouse"
-mouseID = r"m002"
-pipeline_output_PATH = r"small-spread-neuropixel-config"
-date_PATH = r"2026-09-25"
-pipeline_session_output_PATH = r"ad_session_2026_09_25"
-onebox_PATH = r"OneBox-ADC"
-
-ROOT = (
-    Path(data_PATH)
-    / mouseID
-    / pipeline_output_PATH
-    / date_PATH
-    / pipeline_session_output_PATH
-    / onebox_PATH
+# ======================= USER SETTINGS =======================
+# Change this folder for another mouse/date or joint sorting run.
+PIPELINE_DIR = Path(
+    r"R:\Basic_Sciences\Phys\SenzaiLab\Aparna\Data_by_mouse"
+    r"\m002\small-spread-neuropixel-config\2026-09-25\ad_session_2026_09_25"
 )
 
-# Optional: actual session names in the EXACT concatenation order.
-# These are labels; output folders remain session_01, session_02, ... .
+# Folder containing periods_samples.npy and periods_timestamps.npy.
+ADC_DIR = PIPELINE_DIR / "OneBox-ADC"
+
+# Labels in the EXACT concatenation order. Use None for generic session names.
+# Output folders always remain session_01, session_02, etc.
 SESSION_NAMES = [
     "free-360-landmarks",
     "free-360-stars",
@@ -62,7 +60,11 @@ SESSION_NAMES = [
     "head-fixed-360-RF",
     "head-fixed-360-stars",
 ]
-# SESSION_NAMES = None  # Use this for another dataset with unnamed periods.
+
+# True: check inputs and print counts. False: write the split session files.
+# Rerunning with False replaces generated files at the same output paths.
+DRY_RUN = False
+# ===================== END USER SETTINGS =====================
 
 # These optional arrays are known to have one row per exported Kilosort spike.
 # Add other verified spike-row arrays here if needed (e.g. "pc_features.npy").
@@ -204,10 +206,14 @@ def load_job(time_file: Path, ks_dir: Path, shank):
     }
 
 
-def main(root: Path = ROOT, session_names=None) -> None:
-    """Read periods from root (the ADC folder) and export beside that folder."""
+def main(root: Path, session_names=None, *, pipeline_dir=None, dry_run=False) -> None:
+    """Split synchronized spikes; default exports remain beside the ADC folder."""
     adc_dir = Path(root).resolve()
-    pipeline_dir = adc_dir.parent
+    pipeline_dir = adc_dir.parent if pipeline_dir is None else Path(pipeline_dir).resolve()
+    if not adc_dir.is_dir():
+        raise NotADirectoryError(f"ADC input directory does not exist: {adc_dir}")
+    if not pipeline_dir.is_dir():
+        raise NotADirectoryError(f"Pipeline directory does not exist: {pipeline_dir}")
     samples = np.load(adc_dir / "periods_samples.npy", allow_pickle=False)
     stored_periods = np.load(adc_dir / "periods_timestamps.npy", allow_pickle=False)
     periods, join_delta_s, join_tolerance_s = prepare_timestamp_periods(stored_periods)
@@ -272,6 +278,16 @@ def main(root: Path = ROOT, session_names=None) -> None:
         print(f"{i:2d}  {names[i]:24s} {start:11.3f} {end:12.3f} {(end-start)/60:15.3f}")
 
     output_root = pipeline_dir / "sessions"
+    if dry_run:
+        for job in jobs:
+            session_id, _ = assign_sessions(job["times"], periods)
+            counts = np.bincount(session_id[session_id >= 0], minlength=n_sessions)
+            print(f"\n{job['sort_key']}: {job['times'].size:,} spikes")
+            for i, count in enumerate(counts):
+                print(f"  session_{i + 1:02d} ({names[i]}): {count:,} spikes")
+            print(f"  Unassigned: {np.count_nonzero(session_id < 0):,}")
+        print(f"\nDry run complete. No files written. Export destination: {output_root}")
+        return
     session_dirs = [output_root / f"session_{i + 1:02d}" for i in range(n_sessions)]
     counts_by_sort = np.zeros((n_sessions, len(jobs)), dtype=np.int64)
 
@@ -363,5 +379,25 @@ def main(root: Path = ROOT, session_names=None) -> None:
     print("Use session_info.npz for the ADC global-to-local offset; no probe sample conversion is needed.")
 
 
+def cli(argv=None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        main(ADC_DIR, SESSION_NAMES, pipeline_dir=PIPELINE_DIR, dry_run=DRY_RUN)
+        return
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--adc-dir", required=True, type=Path,
+                        help="Folder containing periods_samples.npy and periods_timestamps.npy")
+    parser.add_argument("--pipeline-dir", type=Path,
+                        help="Folder containing probe directories; exports go in its sessions/ folder "
+                             "(default: parent of --adc-dir)")
+    parser.add_argument("--session-names", nargs="+",
+                        help="Unique labels in exact concatenation order; folder names stay session_XX")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Validate inputs and report spike counts without writing files")
+    args = parser.parse_args(argv)
+    main(args.adc_dir, args.session_names, pipeline_dir=args.pipeline_dir, dry_run=args.dry_run)
+
+
 if __name__ == "__main__":
-    main(ROOT, SESSION_NAMES)
+    cli()
